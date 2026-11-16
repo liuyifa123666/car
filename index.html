@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-title" content="车行手册">
 <title>30天入门 · 车行手册</title>
 <style>
   :root{
@@ -519,6 +522,20 @@
       <div class="card">
         <div class="ct">数据与同步</div>
         <div style="font-size:11.5px;color:var(--dim);margin-bottom:10px">版本 v7 · 离线可用 · 不花钱</div>
+        <div style="height:1px;background:rgba(255,255,255,.08);margin:12px 0 14px"></div>
+        <div style="font-size:12px;color:#A9C0FF;font-weight:800;letter-spacing:1px;margin-bottom:2px">云同步（可选）</div>
+        <div style="font-size:11px;color:#94A1B5;line-height:1.7;margin-bottom:4px">
+          填好下面三个，两台设备就会自动同步。不填也能用，只是各存各的。
+        </div>
+        <label>Supabase 项目地址</label>
+        <input id="syUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off" autocorrect="off">
+        <label>anon key（一长串）</label>
+        <input id="syKey" placeholder="eyJhbGciOiJIUzI1..." autocapitalize="off" autocorrect="off">
+        <label>同步 ID（自己起一个，别告诉别人）</label>
+        <input id="syId" placeholder="liuyifa-8f3k2" autocapitalize="off" autocorrect="off">
+        <button class="btn ghost" id="sySaveBtn" style="margin-top:10px">保存并连接</button>
+        <button class="btn ghost" id="syNowBtn" style="margin-top:8px">立即同步一次</button>
+        <div id="syState" style="font-size:11.5px;color:#94A1B5;margin-top:8px"></div>
         <button class="btn ghost" id="btnSyncOut" style="margin-top:0">生成同步码（发到另一台设备）</button>
         <button class="btn ghost" id="btnSyncIn" style="margin-top:8px">粘贴同步码（从另一台设备导入）</button>
         <div class="syncinfo" id="syncInfo"></div>
@@ -816,7 +833,7 @@
     return b;
   }
   var S=load();
-  function save(){try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}}
+  function save(){S.updatedAt=Date.now();try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}if(typeof sySchedule==="function")try{sySchedule();}catch(e){}}
 
   /* ---------------- 状态机：你现在在哪一步 ---------------- */
   function stage(){
@@ -1777,6 +1794,78 @@
     ta.remove();
   }
 
+
+  /* ---------------- 云同步 ---------------- */
+  var SYNC_STORE="chehang_sync_v1";
+  var SY={url:"",key:"",id:""};
+  try{var _sy=JSON.parse(localStorage.getItem(SYNC_STORE)||"{}");if(_sy&&_sy.url)SY=_sy;}catch(e){}
+  function sySaveCfg(){try{localStorage.setItem(SYNC_STORE,JSON.stringify(SY));}catch(e){}}
+  function syReady(){return !!(SY.url&&SY.key&&SY.id);}
+  function syStatus(t){var el=document.getElementById("syState");if(el)el.textContent=t;}
+  function syBase(){return SY.url.replace(/\/+$/,"");}
+  function syHeaders(extra){
+    var h={apikey:SY.key};
+    if(SY.key.indexOf("eyJ")===0)h.Authorization="Bearer "+SY.key;
+    if(extra)for(var k in extra)h[k]=extra[k];
+    return h;
+  }
+
+  function syPush(){
+    if(!syReady())return;
+    var body=[{id:SY.id,data:S,updated_at:S.updatedAt||Date.now()}];
+    fetch(syBase()+"/rest/v1/sync_docs",{
+      method:"POST",
+      headers:syHeaders({"Content-Type":"application/json",Prefer:"resolution=merge-duplicates"}),
+      body:JSON.stringify(body)
+    }).then(function(r){syStatus(r.ok?("已同步 "+(new Date().toLocaleTimeString())):("同步失败 "+r.status));})
+      .catch(function(){syStatus("没网，稍后自动重试");});
+  }
+  var syT=null;
+  function sySchedule(){if(!syReady())return;clearTimeout(syT);syT=setTimeout(syPush,2500);}
+
+  function syPull(){
+    if(!syReady())return;
+    fetch(syBase()+"/rest/v1/sync_docs?id=eq."+encodeURIComponent(SY.id)+"&select=*",{
+      headers:syHeaders()})
+      .then(function(r){return r.json();})
+      .then(function(rows){
+        if(!Array.isArray(rows)||!rows.length){syStatus("云端还没有数据，正在上传…");syPush();return;}
+        var row=rows[0],remote=row.updated_at||0,local=S.updatedAt||0;
+        if(remote>local&&row.data&&typeof row.data==="object"){
+          var d=row.data;
+          S.start=d.start||S.start;S.days=d.days||{};S.cars=d.cars||[];S.cust=d.cust||[];
+          S.income=d.income||[];S.flags=d.flags||{};S.les=d.les||{};S.queue=d.queue||[];
+          S.updatedAt=remote;
+          try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}
+          renderHome();renderCars();renderCust();renderLearn();
+          syStatus("已从云端更新 "+new Date(remote).toLocaleTimeString());
+        }else{
+          syPush();
+        }
+      }).catch(function(){syStatus("连不上，检查地址和 key");});
+  }
+
+  (function(){
+    var u=document.getElementById("syUrl"),k=document.getElementById("syKey"),i=document.getElementById("syId");
+    if(u)u.value=SY.url||"";if(k)k.value=SY.key||"";if(i)i.value=SY.id||"";
+    var b=document.getElementById("sySaveBtn");
+    if(b)b.addEventListener("click",function(){
+      SY.url=(u.value||"").trim();SY.key=(k.value||"").trim();SY.id=(i.value||"").trim();
+      sySaveCfg();syStatus("已保存，正在连接…");syPull();
+    });
+    var n=document.getElementById("syNowBtn");
+    if(n)n.addEventListener("click",function(){syStatus("同步中…");syPull();});
+    document.addEventListener("visibilitychange",function(){
+      if(!document.hidden)syPull();
+    });
+  })();
+
+  if("serviceWorker" in navigator){
+    window.addEventListener("load",function(){
+      navigator.serviceWorker.register("sw.js").catch(function(){});
+    });
+  }
+
   /* ---------------- 启动 ---------------- */
   $("#cIn").value=todayStr();
   $("#openAskBtn").addEventListener("click",openAsk);
@@ -1785,6 +1874,7 @@
   setupIcons();bindLookups();
   renderHome();renderCars();renderCust();renderLearn();renderSafe();initAI();
   if(S.flags.greet!==todayStr())showGreet();
+  syPull();
   (function(){
     var h=(location.hash||"").replace("#","");
     if(h&&$("#v-"+h))goto(h);
